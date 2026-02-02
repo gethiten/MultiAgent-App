@@ -27,18 +27,24 @@ def load_env_vars() -> Dict[str, Optional[str]]:
 
 def validate_env_vars(env_vars: Dict[str, Optional[str]]) -> Dict[str, str]:
     """Validate that required environment variables are set and return validated dict."""
+    # API keys are optional when using Entra ID authentication
     required_vars = [
-        'phi_4_endpoint', 'phi_4_api_key', 'phi_4_api_version', 'phi_4_deployment', 'MCP_SERVER_URL',
-        'FOUNDRY_ENDPOINT', 'FOUNDRY_KEY', 'FOUNDRY_API_VERSION',
-        'gpt_endpoint', 'gpt_deployment', 'gpt_api_key', 'gpt_api_version'
+        'phi_4_endpoint', 'phi_4_api_version', 'phi_4_deployment', 'MCP_SERVER_URL',
+        'FOUNDRY_ENDPOINT', 'FOUNDRY_API_VERSION',
+        'gpt_endpoint', 'gpt_deployment', 'gpt_api_version'
     ]
     missing_vars = [var for var in required_vars if not env_vars.get(var)]
     if missing_vars:
         raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+    # Warn if API keys are missing (will use Entra ID)
+    optional_auth_vars = ['phi_4_api_key', 'FOUNDRY_KEY', 'gpt_api_key']
+    missing_auth = [var for var in optional_auth_vars if not env_vars.get(var)]
+    if missing_auth:
+        print(f"⚠️  API keys not provided for: {', '.join(missing_auth)}")
+        print("Will use Microsoft Entra ID (DefaultAzureCredential) for authentication")
+    
     validated_vars = {}
     for key, value in env_vars.items():
-        if key in required_vars:
-            validated_vars[key] = value  # type: ignore - we know it's not None after validation
-        else:
-            validated_vars[key] = value
+        validated_vars[key] = value
     return validated_vars

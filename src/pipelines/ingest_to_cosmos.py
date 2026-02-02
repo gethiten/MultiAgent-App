@@ -83,23 +83,48 @@ def ensure_string_ids(item: dict[str, Any]) -> dict[str, Any]:
 
 def get_request_embedding(text: str) -> list[float] | None:
     """Call embedding endpoint and return the embedding vector or None on failure."""
-    if not EMBEDDING_ENDPOINT or not EMBEDDING_DEPLOYMENT or not EMBEDDING_API_KEY or not EMBEDDING_API_VERSION:
+    if not EMBEDDING_ENDPOINT or not EMBEDDING_DEPLOYMENT or not EMBEDDING_API_VERSION:
         logger.error("Embedding env vars not fully set; failing embedding generation.")
         return None
 
-    url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": EMBEDDING_API_KEY,
-    }
-    payload = {"input": text}
+    # Try with API key first if provided
+    if EMBEDDING_API_KEY:
+        url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": EMBEDDING_API_KEY,
+        }
+        payload = {"input": text}
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    # Expecting Azure OpenAI style response: {"data":[{"embedding": [...]}, ...]}
-    embedding = data.get("data", [{}])[0].get("embedding")
-    return embedding
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        embedding = data.get("data", [{}])[0].get("embedding")
+        return embedding
+    
+    # Fallback to Entra ID authentication
+    try:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        
+        credential = DefaultAzureCredential()
+        token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+        token = token_provider()
+        
+        url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
+        payload = {"input": text}
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        embedding = data.get("data", [{}])[0].get("embedding")
+        return embedding
+    except Exception as e:
+        logger.error("Failed to authenticate with Entra ID: %s", e)
+        return None
 
 
 def main() -> None:

@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,12 +9,12 @@ from opentelemetry import trace
 from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.ai.agents.telemetry import trace_function
 import time
-# from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor
+from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor
 
 # Enable Azure Monitor tracing
 application_insights_connection_string = os.environ["APPLICATIONINSIGHTS_CONNECTION_STRING"]
-# configure_azure_monitor(connection_string=application_insights_connection_string)
-# OpenAIInstrumentor().instrument()
+configure_azure_monitor(connection_string=application_insights_connection_string)
+OpenAIInstrumentor().instrument()
 
 # scenario = os.path.basename(__file__)
 # tracer = trace.get_tracer(__name__)
@@ -129,12 +130,20 @@ def calculate_discount(CustomerID):
         Returns:
             float: Discount amount to be applied based on the business logic.
         """
-        # Initialize client
-        client = AzureOpenAI(
-            azure_endpoint=endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
+        # Initialize client with API key or Entra ID
+        if api_key:
+            client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                api_key=api_key,
+                api_version=api_version,
+            )
+        else:
+            # Use Entra ID authentication
+            client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                azure_ad_token_provider=DefaultAzureCredential().get_token("https://cognitiveservices.azure.com/.default"),
+                api_version=api_version,
+            )
         # print(f"loyalty_info is:{loyalty_info}, invoice value: {InvoiceValue} and transaction_info is:{transaction_info}")
         prompt= "Bruno's total transaction price in this year"+ transaction_info + "and his data"+str(loyalty_info)
         # print(f"prompt:{prompt}")

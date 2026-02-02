@@ -38,44 +38,78 @@ def get_cosmos_client(endpoint: str | None, key: str | None = None):
     try:
         credential = DefaultAzureCredential()
         client = CosmosClient(endpoint, credential=credential)
-        _ = list(client.list_databases())
         return client
-    except AzureError:
-        pass
-
-    # Fallback to key
-    if key:
-        client = CosmosClient(endpoint, key)
-        return client
-
-    raise RuntimeError(
-        "Failed to authenticate to Cosmos DB using DefaultAzureCredential and no valid COSMOS_KEY was provided"
-    )
+    except AzureError as e:
+        # If local auth is disabled, don't try key fallback
+        if key and "Local Authorization is disabled" not in str(e):
+            try:
+                client = CosmosClient(endpoint, key)
+                return client
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"Failed to authenticate to Cosmos DB. Entra ID error: {e}. "
+            "Ensure the App Service has a managed identity with 'Cosmos DB Built-in Data Contributor' role."
+        )
 
 
 def get_request_embedding(text: str) -> list[float] | None:
     """Call embedding endpoint and return the embedding vector or None on failure."""
-    if not EMBEDDING_ENDPOINT or not EMBEDDING_DEPLOYMENT or not EMBEDDING_API_KEY or not EMBEDDING_API_VERSION:
-        raise ValueError("Embedding endpoint configuration missing. Set EMBEDDING_ENDPOINT, EMBEDDING_DEPLOYMENT, EMBEDDING_API_KEY, EMBEDDING_API_VERSION")
+    if not EMBEDDING_ENDPOINT or not EMBEDDING_DEPLOYMENT or not EMBEDDING_API_VERSION:
+        raise ValueError("Embedding endpoint configuration missing. Set EMBEDDING_ENDPOINT, EMBEDDING_DEPLOYMENT, EMBEDDING_API_VERSION")
 
-    url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": EMBEDDING_API_KEY,
-    }
-    payload = {"input": text}
+    # Try with API key first if provided
+    if EMBEDDING_API_KEY:
+        url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": EMBEDDING_API_KEY,
+        }
+        payload = {"input": text}
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    embedding = data.get("data", [{}])[0].get("embedding")
-    return embedding
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        embedding = data.get("data", [{}])[0].get("embedding")
+        return embedding
+    
+    # Fallback to Entra ID authentication
+    try:
+        from azure.identity import get_bearer_token_provider
+        
+        credential = DefaultAzureCredential()
+        token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+        token = token_provider()
+        
+        url = EMBEDDING_ENDPOINT.rstrip("/") + f"/openai/deployments/{EMBEDDING_DEPLOYMENT}/embeddings?api-version={EMBEDDING_API_VERSION}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
+        payload = {"input": text}
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        embedding = data.get("data", [{}])[0].get("embedding")
+        return embedding
+    except Exception as e:
+        raise RuntimeError(f"Failed to authenticate with Entra ID for embeddings: {e}")
 
 
-# Initialize Cosmos client and container
-_cosmos_client = get_cosmos_client(COSMOS_ENDPOINT, COSMOS_KEY)
-_database = _cosmos_client.get_database_client(DATABASE_NAME)
-_container = _database.get_container_client(CONTAINER_NAME)
+# Initialize Cosmos client and container (lazily to avoid startup failures)
+_cosmos_client = None
+_database = None
+_container = None
+
+def _get_container():
+    """Lazy initialization of Cosmos DB container."""
+    global _cosmos_client, _database, _container
+    if _container is None:
+        _cosmos_client = get_cosmos_client(COSMOS_ENDPOINT, COSMOS_KEY)
+        _database = _cosmos_client.get_database_client(DATABASE_NAME)
+        _container = _database.get_container_client(CONTAINER_NAME)
+    return _container
 
 
 def product_recommendations(question: str, top_k: int = 8):
@@ -106,7 +140,8 @@ def product_recommendations(question: str, top_k: int = 8):
         {"name": "@top", "value": top_k},
     ]
 
-    items = list(_container.query_items(
+    container = _get_container()
+    items = list(container.query_items(
         query=query,
         parameters=parameters,
         enable_cross_partition_query=True,
