@@ -6,7 +6,7 @@ __pycache__/
 __pycache__/
 data/
 venv/
-.env
+# .env - removed to allow CI/CD to inject .env
 .git
 .github
 **/.git
