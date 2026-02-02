@@ -1,0 +1,51 @@
+name: Build and Push to ACR
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  id-token: write  # Required for OIDC authentication with Azure
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Recommended: use OIDC login (no long-lived Azure secret).
+      # You'll need to configure federated credentials in Azure AD for this repo.
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        run: az acr login --name "${{ secrets.ACR_NAME }}"
+
+      - name: Build & Push image (src/ only)
+        working-directory: src
+        env:
+          ENV_SECRET: ${{ secrets.ENV }}
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }} # e.g. myregistry.azurecr.io
+          IMAGE_NAME: ${{ secrets.ACR_IMAGE_NAME }}         # e.g. multiagent-app
+        run: |
+          set -euo pipefail
+
+          # Create .env from the secret *inside the runner workspace* (not committed).
+          printf "%s" "$ENV_SECRET" > .env
+
+          # Build using src/ as context and src/Dockerfile (since working-directory=src).
+          docker build -t "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${GITHUB_SHA}" -f Dockerfile .
+
+          # Push
+          docker push "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${GITHUB_SHA}"
+
+          # Optional: also tag "latest"
+          docker tag "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${GITHUB_SHA}" "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:latest"
+          docker push "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:latest"
